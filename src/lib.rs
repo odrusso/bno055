@@ -4,10 +4,8 @@
 
 //! Bosch Sensortec BNO055 9-axis IMU sensor driver.
 //! Datasheet: https://ae-bst.resource.bosch.com/media/_tech/media/datasheets/BST-BNO055-DS000.pdf
-use embedded_hal::{
-    delay::DelayNs,
-    i2c::{I2c, SevenBitAddress},
-};
+use embedded_hal::delay::DelayNs;
+use embedded_hal_async::i2c::I2c as AsyncI2c;
 
 #[cfg(not(feature = "defmt-03"))]
 use bitflags::bitflags;
@@ -53,7 +51,8 @@ pub struct Bno055<I> {
 
 impl<I, E> Bno055<I>
 where
-    I: I2c<SevenBitAddress, Error = E>,
+    // I: I2c<SevenBitAddress, Error = E>,
+    I: AsyncI2c<Error = E>,
 {
     /// Side-effect-free constructor.
     /// Nothing will be read or written before `init()` call.
@@ -118,18 +117,19 @@ where
     /// bno055.init(&mut delay)?;
     /// # Result::<(), bno055::Error<DummyError>>::Ok(())
     /// ```
-    pub fn init(&mut self, delay: &mut dyn DelayNs) -> Result<(), Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn init(&mut self, delay: &mut dyn DelayNs) -> Result<(), Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
-        let id = self.id()?;
+        let id = self.id().await?;
         if id != regs::BNO055_ID {
             return Err(Error::InvalidChipId(id));
         }
 
-        self.soft_reset(delay)?;
-        self.set_mode(BNO055OperationMode::CONFIG_MODE, delay)?;
-        self.set_power_mode(BNO055PowerMode::NORMAL)?;
+        self.soft_reset(delay).await?;
+        self.set_mode(BNO055OperationMode::CONFIG_MODE, delay).await?;
+        self.set_power_mode(BNO055PowerMode::NORMAL).await?;
         self.write_u8(regs::BNO055_SYS_TRIGGER, 0x00)
+            .await
             .map_err(Error::I2c)?;
 
         Ok(())
@@ -137,13 +137,14 @@ where
 
     /// Resets the BNO055, initializing the register map to default values.
     /// More in section 3.2.
-    pub fn soft_reset(&mut self, delay: &mut dyn DelayNs) -> Result<(), Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn soft_reset(&mut self, delay: &mut dyn DelayNs) -> Result<(), Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         self.write_u8(
             regs::BNO055_SYS_TRIGGER,
             regs::BNO055_SYS_TRIGGER_RST_SYS_BIT,
         )
+        .await
         .map_err(Error::I2c)?;
 
         // As per table 1.2
@@ -153,17 +154,18 @@ where
 
     /// Sets the operating mode, see [BNO055OperationMode](enum.BNO055OperationMode.html).
     /// See section 3.3.
-    pub fn set_mode(
+    pub async fn set_mode(
         &mut self,
         mode: BNO055OperationMode,
         delay: &mut dyn DelayNs,
     ) -> Result<(), Error<E>> {
         if self.mode != mode {
-            self.set_page(BNO055RegisterPage::PAGE_0)?;
+            self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
             self.mode = mode;
 
             self.write_u8(regs::BNO055_OPR_MODE, mode.bits())
+                .await
                 .map_err(Error::I2c)?;
 
             // Table 3-6 says 19ms to switch to CONFIG_MODE
@@ -175,62 +177,66 @@ where
 
     /// Sets the power mode, see [BNO055PowerMode](enum.BNO055PowerMode.html)
     /// See section 3.2
-    pub fn set_power_mode(&mut self, mode: BNO055PowerMode) -> Result<(), Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn set_power_mode(&mut self, mode: BNO055PowerMode) -> Result<(), Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         self.write_u8(regs::BNO055_PWR_MODE, mode.bits())
+            .await
             .map_err(Error::I2c)?;
 
         Ok(())
     }
 
     /// Returns BNO055's power mode.
-    pub fn power_mode(&mut self) -> Result<BNO055PowerMode, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn power_mode(&mut self) -> Result<BNO055PowerMode, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
-        let mode = self.read_u8(regs::BNO055_PWR_MODE).map_err(Error::I2c)?;
+        let mode = self.read_u8(regs::BNO055_PWR_MODE).await.map_err(Error::I2c)?;
 
         Ok(BNO055PowerMode::from_bits_truncate(mode))
     }
 
     /// Enables/Disables usage of external 32k crystal.
-    pub fn set_external_crystal(
+    pub async fn set_external_crystal(
         &mut self,
         ext: bool,
         delay: &mut dyn DelayNs,
     ) -> Result<(), Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         let prev = self.mode;
-        self.set_mode(BNO055OperationMode::CONFIG_MODE, delay)?;
+        self.set_mode(BNO055OperationMode::CONFIG_MODE, delay).await?;
         self.write_u8(regs::BNO055_SYS_TRIGGER, if ext { 0x80 } else { 0x00 })
+            .await
             .map_err(Error::I2c)?;
 
-        self.set_mode(prev, delay)?;
+        self.set_mode(prev, delay).await?;
 
         Ok(())
     }
 
     /// Configures axis remap of the device.
-    pub fn set_axis_remap(&mut self, remap: AxisRemap) -> Result<(), Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn set_axis_remap(&mut self, remap: AxisRemap) -> Result<(), Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         let remap_value = (remap.x.bits() & 0b11)
             | ((remap.y.bits() & 0b11) << 2)
             | ((remap.z.bits() & 0b11) << 4);
 
         self.write_u8(regs::BNO055_AXIS_MAP_CONFIG, remap_value)
+            .await
             .map_err(Error::I2c)?;
 
         Ok(())
     }
 
     /// Returns axis remap of the device.
-    pub fn axis_remap(&mut self) -> Result<AxisRemap, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn axis_remap(&mut self) -> Result<AxisRemap, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         let value = self
             .read_u8(regs::BNO055_AXIS_MAP_CONFIG)
+            .await
             .map_err(Error::I2c)?;
 
         let remap = AxisRemap {
@@ -243,21 +249,23 @@ where
     }
 
     /// Configures device's axes sign: positive or negative.
-    pub fn set_axis_sign(&mut self, sign: BNO055AxisSign) -> Result<(), Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn set_axis_sign(&mut self, sign: BNO055AxisSign) -> Result<(), Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         self.write_u8(regs::BNO055_AXIS_MAP_SIGN, sign.bits())
+            .await
             .map_err(Error::I2c)?;
 
         Ok(())
     }
 
     /// Return device's axes sign.
-    pub fn axis_sign(&mut self) -> Result<BNO055AxisSign, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn axis_sign(&mut self) -> Result<BNO055AxisSign, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         let value = self
             .read_u8(regs::BNO055_AXIS_MAP_SIGN)
+            .await
             .map_err(Error::I2c)?;
 
         Ok(BNO055AxisSign::from_bits_truncate(value))
@@ -265,12 +273,13 @@ where
 
     /// Gets the revision of software, bootloader, accelerometer, magnetometer, and gyroscope of
     /// the BNO055 device.
-    pub fn get_revision(&mut self) -> Result<BNO055Revision, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn get_revision(&mut self) -> Result<BNO055Revision, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         let mut buf: [u8; 6] = [0; 6];
 
         self.read_bytes(regs::BNO055_ACC_ID, &mut buf)
+            .await 
             .map_err(Error::I2c)?;
 
         Ok(BNO055Revision {
@@ -283,20 +292,21 @@ where
     }
 
     /// Returns device's system status.
-    pub fn get_system_status(
+    pub async fn get_system_status(
         &mut self,
         do_selftest: bool,
         delay: &mut dyn DelayNs,
     ) -> Result<BNO055SystemStatus, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         let selftest = if do_selftest {
             let prev = self.mode;
-            self.set_mode(BNO055OperationMode::CONFIG_MODE, delay)?;
+            self.set_mode(BNO055OperationMode::CONFIG_MODE, delay).await?;
 
-            let sys_trigger = self.read_u8(regs::BNO055_SYS_TRIGGER).map_err(Error::I2c)?;
+            let sys_trigger = self.read_u8(regs::BNO055_SYS_TRIGGER).await.map_err(Error::I2c)?;
 
             self.write_u8(regs::BNO055_SYS_TRIGGER, sys_trigger | 0x1)
+                .await
                 .map_err(Error::I2c)?;
 
             // Wait for self-test result
@@ -304,17 +314,17 @@ where
                 delay.delay_ms(255);
             }
 
-            let result = self.read_u8(regs::BNO055_ST_RESULT).map_err(Error::I2c)?;
+            let result = self.read_u8(regs::BNO055_ST_RESULT).await.map_err(Error::I2c)?;
 
-            self.set_mode(prev, delay)?; // Restore previous mode
+            self.set_mode(prev, delay).await?; // Restore previous mode
 
             Some(BNO055SelfTestStatus::from_bits_truncate(result))
         } else {
             None
         };
 
-        let status = self.read_u8(regs::BNO055_SYS_STATUS).map_err(Error::I2c)?;
-        let error = self.read_u8(regs::BNO055_SYS_ERR).map_err(Error::I2c)?;
+        let status = self.read_u8(regs::BNO055_SYS_STATUS).await.map_err(Error::I2c)?;
+        let error = self.read_u8(regs::BNO055_SYS_ERR).await.map_err(Error::I2c)?;
 
         Ok(BNO055SystemStatus {
             status: BNO055SystemStatusCode::from_bits_truncate(status),
@@ -325,13 +335,14 @@ where
 
     /// Gets a quaternion (`mint::Quaternion<f32>`) reading from the BNO055.
     /// Available only in sensor fusion modes.
-    pub fn quaternion(&mut self) -> Result<mint::Quaternion<f32>, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn quaternion(&mut self) -> Result<mint::Quaternion<f32>, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         // Device should be in fusion mode to be able to produce quaternions
         if self.mode.is_fusion_enabled() {
             let mut buf: [u8; 8] = [0; 8];
             self.read_bytes(regs::BNO055_QUA_DATA_W_LSB, &mut buf)
+                .await
                 .map_err(Error::I2c)?;
 
             let w = LittleEndian::read_i16(&buf[0..2]);
@@ -360,14 +371,15 @@ where
     /// Get Euler angles representation of heading in degrees.
     /// Euler angles is represented as (`roll`, `pitch`, `yaw/heading`).
     /// Available only in sensor fusion modes.
-    pub fn euler_angles(&mut self) -> Result<mint::EulerAngles<f32, ()>, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn euler_angles(&mut self) -> Result<mint::EulerAngles<f32, ()>, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         // Device should be in fusion mode to be able to produce Euler angles
         if self.mode.is_fusion_enabled() {
             let mut buf: [u8; 6] = [0; 6];
 
             self.read_bytes(regs::BNO055_EUL_HEADING_LSB, &mut buf)
+                .await
                 .map_err(Error::I2c)?;
 
             let heading = LittleEndian::read_i16(&buf[0..2]) as f32;
@@ -385,10 +397,10 @@ where
     }
 
     /// Get calibration status
-    pub fn get_calibration_status(&mut self) -> Result<BNO055CalibrationStatus, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn get_calibration_status(&mut self) -> Result<BNO055CalibrationStatus, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
-        let status = self.read_u8(regs::BNO055_CALIB_STAT).map_err(Error::I2c)?;
+        let status = self.read_u8(regs::BNO055_CALIB_STAT).await.map_err(Error::I2c)?;
 
         let sys = (status >> 6) & 0b11;
         let gyr = (status >> 4) & 0b11;
@@ -399,43 +411,44 @@ where
     }
 
     /// Checks whether device is fully calibrated or not.
-    pub fn is_fully_calibrated(&mut self) -> Result<bool, Error<E>> {
-        let status = self.get_calibration_status()?;
+    pub async fn is_fully_calibrated(&mut self) -> Result<bool, Error<E>> {
+        let status = self.get_calibration_status().await?;
         Ok(status.mag == 3 && status.gyr == 3 && status.acc == 3 && status.sys == 3)
     }
 
     /// Reads current calibration profile of the device.
-    pub fn calibration_profile(
+    pub async fn calibration_profile(
         &mut self,
         delay: &mut dyn DelayNs,
     ) -> Result<BNO055Calibration, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         let prev_mode = self.mode;
-        self.set_mode(BNO055OperationMode::CONFIG_MODE, delay)?;
+        self.set_mode(BNO055OperationMode::CONFIG_MODE, delay).await?;
 
         let mut buf: [u8; BNO055_CALIB_SIZE] = [0; BNO055_CALIB_SIZE];
 
         self.read_bytes(regs::BNO055_ACC_OFFSET_X_LSB, &mut buf[..])
+            .await
             .map_err(Error::I2c)?;
 
         let res = BNO055Calibration::from_buf(&buf);
 
-        self.set_mode(prev_mode, delay)?;
+        self.set_mode(prev_mode, delay).await?;
 
         Ok(res)
     }
 
     /// Sets current calibration profile.
-    pub fn set_calibration_profile(
+    pub async fn set_calibration_profile(
         &mut self,
         calib: BNO055Calibration,
         delay: &mut dyn DelayNs,
     ) -> Result<(), Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         let prev_mode = self.mode;
-        self.set_mode(BNO055OperationMode::CONFIG_MODE, delay)?;
+        self.set_mode(BNO055OperationMode::CONFIG_MODE, delay).await?;
 
         let buf_profile = calib.as_bytes();
 
@@ -451,25 +464,26 @@ where
 
         self.i2c
             .write(self.i2c_addr(), &buf_with_reg[..])
+            .await
             .map_err(Error::I2c)?;
 
-        self.set_mode(prev_mode, delay)?;
+        self.set_mode(prev_mode, delay).await?;
 
         Ok(())
     }
 
     /// Returns device's factory-programmed and constant chip ID.
     /// This ID is device model ID and not a BNO055's unique ID, whic is stored in different register.
-    pub fn id(&mut self) -> Result<u8, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
-        self.read_u8(regs::BNO055_CHIP_ID).map_err(Error::I2c)
+    pub async fn id(&mut self) -> Result<u8, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
+        self.read_u8(regs::BNO055_CHIP_ID).await.map_err(Error::I2c)
     }
 
     /// Returns device's operation mode.
-    pub fn get_mode(&mut self) -> Result<BNO055OperationMode, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn get_mode(&mut self) -> Result<BNO055OperationMode, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
-        let mode = self.read_u8(regs::BNO055_OPR_MODE).map_err(Error::I2c)?;
+        let mode = self.read_u8(regs::BNO055_OPR_MODE).await.map_err(Error::I2c)?;
         let mode = BNO055OperationMode::from_bits_truncate(mode);
         self.mode = mode;
 
@@ -481,38 +495,38 @@ where
         Ok(self.mode.is_fusion_enabled())
     }
 
-    pub fn get_acc_config(&mut self) -> Result<AccConfig, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_1)?;
+    pub async fn get_acc_config(&mut self) -> Result<AccConfig, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_1).await?;
 
-        let bits = self.read_u8(regs::BNO055_ACC_CONFIG).map_err(Error::I2c)?;
+        let bits = self.read_u8(regs::BNO055_ACC_CONFIG).await.map_err(Error::I2c)?;
 
         let acc_config = AccConfig::try_from_bits(bits).map_err(Error::AccConfig)?;
 
         Ok(acc_config)
     }
 
-    pub fn set_acc_config(&mut self, acc_config: &AccConfig) -> Result<(), Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_1)?;
+    pub async fn set_acc_config(&mut self, acc_config: &AccConfig) -> Result<(), Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_1).await?;
 
-        self.write_u8(regs::BNO055_ACC_CONFIG, acc_config.bits())
+        self.write_u8(regs::BNO055_ACC_CONFIG, acc_config.bits()).await
             .map_err(Error::I2c)?;
 
         Ok(())
     }
 
     /// Sets current register map page.
-    fn set_page(&mut self, page: BNO055RegisterPage) -> Result<(), Error<E>> {
-        self.write_u8(regs::BNO055_PAGE_ID, page.bits())
+    async fn set_page(&mut self, page: BNO055RegisterPage) -> Result<(), Error<E>> {
+        self.write_u8(regs::BNO055_PAGE_ID, page.bits()).await
             .map_err(Error::I2c)?;
 
         Ok(())
     }
 
     /// Reads a vector of sensor data from the device.
-    fn read_vec_raw(&mut self, reg: u8) -> Result<mint::Vector3<i16>, Error<E>> {
+    async fn read_vec_raw(&mut self, reg: u8) -> Result<mint::Vector3<i16>, Error<E>> {
         let mut buf: [u8; 6] = [0; 6];
 
-        self.read_bytes(reg, &mut buf).map_err(Error::I2c)?;
+        self.read_bytes(reg, &mut buf).await.map_err(Error::I2c)?;
 
         let x = LittleEndian::read_i16(&buf[0..2]);
         let y = LittleEndian::read_i16(&buf[2..4]);
@@ -532,10 +546,10 @@ where
 
     /// Returns linear acceleration vector in cm/s^2 units.
     /// Available only in sensor fusion modes.
-    pub fn linear_acceleration_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
+    pub async fn linear_acceleration_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
         if self.mode.is_fusion_enabled() {
-            self.set_page(BNO055RegisterPage::PAGE_0)?;
-            self.read_vec_raw(regs::BNO055_LIA_DATA_X_LSB)
+            self.set_page(BNO055RegisterPage::PAGE_0).await?;
+            self.read_vec_raw(regs::BNO055_LIA_DATA_X_LSB).await
         } else {
             Err(Error::InvalidMode)
         }
@@ -543,18 +557,18 @@ where
 
     /// Returns linear acceleration vector in m/s^2 units.
     /// Available only in sensor fusion modes.
-    pub fn linear_acceleration(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
-        let linear_acceleration = self.linear_acceleration_fixed()?;
+    pub async fn linear_acceleration(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
+        let linear_acceleration = self.linear_acceleration_fixed().await?;
         let scaling = 1f32 / 100f32; // 1 m/s^2 = 100 lsb
         Ok(Self::scale_vec(linear_acceleration, scaling))
     }
 
     /// Returns gravity vector in cm/s^2 units.
     /// Available only in sensor fusion modes.
-    pub fn gravity_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
+    pub async fn gravity_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
         if self.mode.is_fusion_enabled() {
-            self.set_page(BNO055RegisterPage::PAGE_0)?;
-            self.read_vec_raw(regs::BNO055_GRV_DATA_X_LSB)
+            self.set_page(BNO055RegisterPage::PAGE_0).await?;
+            self.read_vec_raw(regs::BNO055_GRV_DATA_X_LSB).await
         } else {
             Err(Error::InvalidMode)
         }
@@ -562,18 +576,18 @@ where
 
     /// Returns gravity vector in m/s^2 units.
     /// Available only in sensor fusion modes.
-    pub fn gravity(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
-        let gravity = self.gravity_fixed()?;
+    pub async fn gravity(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
+        let gravity = self.gravity_fixed().await?;
         let scaling = 1f32 / 100f32; // 1 m/s^2 = 100 lsb
         Ok(Self::scale_vec(gravity, scaling))
     }
 
     /// Returns current accelerometer data in cm/s^2 units.
     /// Available only in modes in which accelerometer is enabled.
-    pub fn accel_data_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
+    pub async fn accel_data_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
         if self.mode.is_accel_enabled() {
-            self.set_page(BNO055RegisterPage::PAGE_0)?;
-            self.read_vec_raw(regs::BNO055_ACC_DATA_X_LSB)
+            self.set_page(BNO055RegisterPage::PAGE_0).await?;
+            self.read_vec_raw(regs::BNO055_ACC_DATA_X_LSB).await
         } else {
             Err(Error::InvalidMode)
         }
@@ -581,18 +595,18 @@ where
 
     /// Returns current accelerometer data in m/s^2 units.
     /// Available only in modes in which accelerometer is enabled.
-    pub fn accel_data(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
-        let a = self.accel_data_fixed()?;
+    pub async fn accel_data(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
+        let a = self.accel_data_fixed().await?;
         let scaling = 1f32 / 100f32; // 1 m/s^2 = 100 lsb
         Ok(Self::scale_vec(a, scaling))
     }
 
     /// Returns current gyroscope data in 1/16th deg/s units.
     /// Available only in modes in which gyroscope is enabled.
-    pub fn gyro_data_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
+    pub async fn gyro_data_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
         if self.mode.is_gyro_enabled() {
-            self.set_page(BNO055RegisterPage::PAGE_0)?;
-            self.read_vec_raw(regs::BNO055_GYR_DATA_X_LSB)
+            self.set_page(BNO055RegisterPage::PAGE_0).await?;
+            self.read_vec_raw(regs::BNO055_GYR_DATA_X_LSB).await
         } else {
             Err(Error::InvalidMode)
         }
@@ -600,18 +614,18 @@ where
 
     /// Returns current gyroscope data in deg/s units.
     /// Available only in modes in which gyroscope is enabled.
-    pub fn gyro_data(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
-        let g = self.gyro_data_fixed()?;
+    pub async fn gyro_data(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
+        let g = self.gyro_data_fixed().await?;
         let scaling = 1f32 / 16f32; // 1 deg/s = 16 lsb
         Ok(Self::scale_vec(g, scaling))
     }
 
     /// Returns current magnetometer data in 1/16th uT units.
     /// Available only in modes in which magnetometer is enabled.
-    pub fn mag_data_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
+    pub async fn mag_data_fixed(&mut self) -> Result<mint::Vector3<i16>, Error<E>> {
         if self.mode.is_mag_enabled() {
-            self.set_page(BNO055RegisterPage::PAGE_0)?;
-            self.read_vec_raw(regs::BNO055_MAG_DATA_X_LSB)
+            self.set_page(BNO055RegisterPage::PAGE_0).await?;
+            self.read_vec_raw(regs::BNO055_MAG_DATA_X_LSB).await
         } else {
             Err(Error::InvalidMode)
         }
@@ -619,18 +633,18 @@ where
 
     /// Returns current magnetometer data in uT units.
     /// Available only in modes in which magnetometer is enabled.
-    pub fn mag_data(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
-        let m = self.mag_data_fixed()?;
+    pub async fn mag_data(&mut self) -> Result<mint::Vector3<f32>, Error<E>> {
+        let m = self.mag_data_fixed().await?;
         let scaling = 1f32 / 16f32; // 1 uT = 16 lsb
         Ok(Self::scale_vec(m, scaling))
     }
 
     /// Returns current temperature of the chip (in degrees Celsius).
-    pub fn temperature(&mut self) -> Result<i8, Error<E>> {
-        self.set_page(BNO055RegisterPage::PAGE_0)?;
+    pub async fn temperature(&mut self) -> Result<i8, Error<E>> {
+        self.set_page(BNO055RegisterPage::PAGE_0).await?;
 
         // Read temperature signed byte
-        let temp = self.read_u8(regs::BNO055_TEMP).map_err(Error::I2c)? as i8;
+        let temp = self.read_u8(regs::BNO055_TEMP).await.map_err(Error::I2c)? as i8;
         Ok(temp)
     }
 
@@ -643,21 +657,21 @@ where
         }
     }
 
-    fn read_u8(&mut self, reg: u8) -> Result<u8, E> {
+    async fn read_u8(&mut self, reg: u8) -> Result<u8, E> {
         let mut byte: [u8; 1] = [0; 1];
 
-        match self.i2c.write_read(self.i2c_addr(), &[reg], &mut byte) {
+        match self.i2c.write_read(self.i2c_addr(), &[reg], &mut byte).await {
             Ok(_) => Ok(byte[0]),
             Err(e) => Err(e),
         }
     }
 
-    fn read_bytes(&mut self, reg: u8, buf: &mut [u8]) -> Result<(), E> {
-        self.i2c.write_read(self.i2c_addr(), &[reg], buf)
+    async fn read_bytes(&mut self, reg: u8, buf: &mut [u8]) -> Result<(), E> {
+        self.i2c.write_read(self.i2c_addr(), &[reg], buf).await
     }
 
-    fn write_u8(&mut self, reg: u8, value: u8) -> Result<(), E> {
-        self.i2c.write(self.i2c_addr(), &[reg, value])?;
+    async fn write_u8(&mut self, reg: u8, value: u8) -> Result<(), E> {
+        self.i2c.write(self.i2c_addr(), &[reg, value]).await?;
 
         Ok(())
     }
